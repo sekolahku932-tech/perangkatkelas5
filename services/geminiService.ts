@@ -67,7 +67,6 @@ export const analyzeCPToTP = async (cpContent: string, elemen: string, fase: str
 export const completeATPDetails = async (tp: string, materi: string, kelas: string, apiKey?: string) => {
   const ai = new GoogleGenAI({ apiKey: getApiKey(apiKey) });
   
-  // PROMPT DIKETEATKAN PADA 8 DIMENSI KHUSUS
   const prompt = `Lengkapi detail ATP SD Kelas 5 (Fase C). TP: "${tp}" | Materi: "${materi}".
   
   ATURAN DIMENSI PROFIL:
@@ -79,9 +78,7 @@ export const completeATPDetails = async (tp: string, materi: string, kelas: stri
   5. Kolaborasi
   6. Kemandirian
   7. Kesehatan
-  8. Komunikasi
-  
-  DILARANG menggunakan dimensi Profil Pelajar Pancasila standar nasional lainnya.`;
+  8. Komunikasi`;
 
   const response = await ai.models.generateContent({
     model: COMPLEX_MODEL,
@@ -127,21 +124,22 @@ export const recommendPedagogy = async (tp: string, alurAtp: string, materi: str
 export const generateRPMContent = async (tp: string, materi: string, kelas: string, praktikPedagogis: string, alokasiWaktu: string, jumlahPertemuan: number = 1, apiKey?: string) => {
   const ai = new GoogleGenAI({ apiKey: getApiKey(apiKey) });
   
-  const prompt = `Susun Rencana Pembelajaran Mendalam (RPM) SD Kelas 5 (Fase C).
-  TUJUAN PEMBELAJARAN: "${tp}"
+  const prompt = `Susun Rencana Pembelajaran Mendalam (RPM) yang sangat urai untuk SD Kelas 5 (Fase C).
   MATERI: "${materi}"
-  MODEL/STRATEGI: "${praktikPedagogis}"
-  JUMLAH SESI: ${jumlahPertemuan} pertemuan.
+  TUJUAN: "${tp}"
+  DURASI: ${jumlahPertemuan} pertemuan.
 
-  ATURAN PERMANEN WAJIB:
-  1. FILOSOFI: Pembelajaran HARUS mengintegrasikan prinsip: Berkesadaran (Mindful), Bermakna (Meaningful), dan Menggembirakan (Joyful). Sebutkan kata-kata ini dalam narasi langkah kerja.
-  2. MULTI-SESI: Anda HARUS menyusun rincian untuk SETIAP pertemuan (Pertemuan 1 sampai Pertemuan ${jumlahPertemuan}).
-  3. FORMAT FIELD: Di dalam field 'kegiatanAwal', 'kegiatanInti', dan 'kegiatanPenutup', gunakan penanda "Pertemuan 1:", "Pertemuan 2:", dst. untuk memisahkan rincian tiap sesi.
-  4. ALUR 3M:
-     - Memahami (Kegiatan Awal): Membangun koneksi dan kesadaran diri.
-     - Mengaplikasi (Kegiatan Inti): Praktik bermakna dan kolaboratif.
-     - Merefleksi (Kegiatan Penutup): Penguatan emosional dan kegembiraan belajar.
+  WAJIB: Setiap langkah (Awal, Inti, Penutup) harus mengandung TIGA UNSUR berikut sekaligus:
+  1. BERKESADARAN (Mindful): Aktivitas yang membangun kehadiran utuh dan fokus siswa.
+  2. BERMAKNA (Meaningful): Aktivitas yang menghubungkan materi dengan kehidupan nyata di Gorontalo/Bilato.
+  3. MENGGEMBIRAKAN (Joyful): Aktivitas interaktif yang memicu kegembiraan dan motivasi belajar.
 
+  STRUKTUR OUTPUT (Tulis dalam format poin-poin linear untuk setiap pertemuan):
+  - Kegiatan Awal (Memahami): Fokus pada koneksi berkesadaran, motivasi bermakna, dan pembukaan yang menggembirakan.
+  - Kegiatan Inti (Mengaplikasi): Fokus pada aksi nyata yang menantang, kerja sama bermakna, dan proses eksplorasi berkesadaran yang menyenangkan.
+  - Kegiatan Penutup (Merefleksi): Fokus pada perayaan pencapaian, refleksi batin berkesadaran, dan penutupan yang menggembirakan.
+
+  Instruksi Narasi: Gunakan penanda [Berkesadaran], [Bermakna], atau [Menggembirakan] di akhir kalimat yang merepresentasikan unsur tersebut.
   Hasilkan respon dalam JSON.`;
   
   const response = await ai.models.generateContent({
