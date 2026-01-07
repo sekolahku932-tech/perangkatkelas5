@@ -1,0 +1,384 @@
+
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Fase, Kelas, CapaianPembelajaran, AnalisisCP, MATA_PELAJARAN, SchoolSettings, User } from '../types';
+import { Plus, Trash2, Sparkles, Loader2, Eye, EyeOff, BrainCircuit, Cloud, AlertTriangle, X, FileDown, Printer, Lock, AlertCircle, ListChecks, Info, BookOpen } from 'lucide-react';
+import { analyzeCPToTP } from '../services/geminiService';
+import { db, collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc } from '../services/firebase';
+
+interface AnalisisManagerProps {
+  user: User;
+}
+
+const AnalisisManager: React.FC<AnalisisManagerProps> = ({ user }) => {
+  const [cps, setCps] = useState<CapaianPembelajaran[]>([]);
+  const [analisis, setAnalisis] = useState<AnalisisCP[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const filterFase = Fase.C; // Locked
+  const filterKelas = '5'; // Locked
+  const [filterMapel, setFilterMapel] = useState<string>(MATA_PELAJARAN[0]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isPrintMode, setIsPrintMode] = useState(false);
+  
+  const [settings, setSettings] = useState<SchoolSettings>({
+    schoolName: 'SDN SONDANA',
+    address: 'Kecamatan Bilato, Kabupaten Gorontalo',
+    principalName: 'Nama Kepala Sekolah',
+    principalNip: '-'
+  });
+
+  const [activeYear, setActiveYear] = useState('2024/2025');
+  const printRef = useRef<HTMLDivElement>(null);
+
+  // FIX: If guru has no assigned mapel, show all by default
+  const availableMapel = useMemo(() => {
+    if (user.role === 'admin' || !user.mapelDiampu || user.mapelDiampu.length === 0) {
+      return MATA_PELAJARAN;
+    }
+    return user.mapelDiampu;
+  }, [user]);
+
+  useEffect(() => {
+    if (!availableMapel.includes(filterMapel)) {
+      setFilterMapel(availableMapel[0]);
+    }
+  }, [availableMapel]);
+
+  useEffect(() => {
+    setLoading(true);
+    const unsubSettings = onSnapshot(doc(db, "settings", "school_info"), (snap) => {
+      if (snap.exists()) setSettings(snap.data() as SchoolSettings);
+    });
+
+    const unsubYears = onSnapshot(collection(db, "academic_years"), (snap) => {
+      const active = snap.docs.find((d: any) => d.data().isActive);
+      if (active) setActiveYear(active.data().year);
+    });
+
+    const unsubCp = onSnapshot(collection(db, "cps"), snap => {
+      setCps(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as CapaianPembelajaran[]);
+    });
+
+    const unsubAnalisis = onSnapshot(collection(db, "analisis"), snap => {
+      setAnalisis(snap.docs.map(doc => ({ id: doc.id, ...doc.data() })) as AnalisisCP[]);
+      setLoading(false);
+    });
+    return () => { unsubSettings(); unsubYears(); unsubCp(); unsubAnalisis(); };
+  }, []);
+
+  const filteredAnalisis = useMemo(() => {
+    const currentMapelNormalized = (filterMapel || '').trim().toLowerCase();
+    return analisis
+      .filter(a => a.fase === filterFase && a.kelas === filterKelas && a.mataPelajaran.trim().toLowerCase() === currentMapelNormalized)
+      .sort((a, b) => (a.indexOrder || 0) - (b.indexOrder || 0));
+  }, [analisis, filterFase, filterKelas, filterMapel]);
+
+  const filteredCps = useMemo(() => {
+    const currentMapelNormalized = (filterMapel || '').trim().toLowerCase();
+    return cps
+      .filter(cp => cp.fase === filterFase && cp.mataPelajaran.trim().toLowerCase() === currentMapelNormalized)
+      .sort((a, b) => (a.kode || '').localeCompare(b.kode || '', undefined, { numeric: true, sensitivity: 'base' }));
+  }, [cps, filterFase, filterMapel]);
+
+  const cpLookup = useMemo(() => {
+    const map: Record<string, string> = {};
+    cps.forEach(c => map[c.id] = c.deskripsi);
+    return map;
+  }, [cps]);
+
+  const handleAnalyze = async (cp: CapaianPembelajaran) => {
+    setIsAnalyzing(true);
+    try {
+      const results = await analyzeCPToTP(cp.deskripsi, cp.elemen, cp.fase, filterKelas, user.apiKey);
+      if (results && Array.isArray(results)) {
+        let lastOrder = filteredAnalisis.length > 0 ? Math.max(...filteredAnalisis.map(a => a.indexOrder || 0)) : 0;
+        for (const res of results) {
+          lastOrder++;
+          await addDoc(collection(db, "analisis"), {
+            cpId: cp.id,
+            fase: filterFase,
+            kelas: filterKelas,
+            mataPelajaran: filterMapel,
+            materi: res.materi,
+            subMateri: res.subMateri || '',
+            tujuanPembelajaran: res.tp,
+            indexOrder: lastOrder
+          });
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      alert("Gagal analisis AI. Cek kuota API Key Anda.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleExportWord = () => {
+    const header = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Analisis CP</title><style>table { border-collapse: collapse; width: 100%; } th, td { border: 1px solid black; padding: 8px; font-family: 'Arial'; font-size: 10px; vertical-align: top; } .text-center { text-align: center; } .font-bold { font-weight: bold; } .bg-gray { background-color: #f3f4f6; }</style></head><body>`;
+    const footer = "</body></html>";
+    let tableHtml = `
+      <div style="text-align:center">
+        <h2 style="margin:0">ANALISIS CAPAIAN PEMBELAJARAN</h2>
+        <h3 style="margin:5px 0">${settings.schoolName}</h3>
+        <p style="font-size:10px">MATA PELAJARAN: ${filterMapel} | KELAS: ${filterKelas} | TAHUN: ${activeYear}</p>
+      </div>
+      <br/>
+      <table>
+        <thead>
+          <tr class="bg-gray">
+            <th style="width:30px">NO</th>
+            <th>CAPAIAN PEMBELAJARAN</th>
+            <th>MATERI POKOK</th>
+            <th>TUJUAN PEMBELAJARAN</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filteredAnalisis.map((item, idx) => {
+            const cpDesc = cpLookup[item.cpId] || '-';
+            return `
+              <tr>
+                <td class="text-center">${idx + 1}</td>
+                <td style="text-align: justify;">${cpDesc}</td>
+                <td class="font-bold">${item.materi}</td>
+                <td style="text-align: justify;">${item.tujuanPembelajaran}</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    `;
+    const blob = new Blob(['\ufeff', header + tableHtml + footer], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ANALISIS_CP_${filterMapel}_KLS${filterKelas}.doc`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handlePrint = () => {
+    const content = printRef.current?.innerHTML;
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Cetak Analisis CP - SDN SONDANA</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+            <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+            <style>
+              body { font-family: 'Inter', sans-serif; background: white; padding: 40px; }
+              @media print { 
+                .no-print { display: none !important; }
+                body { padding: 0; }
+              }
+              table { border-collapse: collapse; }
+              .break-inside-avoid { page-break-inside: avoid; }
+            </style>
+          </head>
+          <body onload="setTimeout(() => { window.print(); window.close(); }, 500)">
+            ${content}
+          </body>
+        </html>
+      `);
+      printWindow.document.close();
+    }
+  };
+
+  if (isPrintMode) {
+    return (
+      <div className="bg-white p-12 min-h-screen text-slate-900 font-serif">
+        <div className="no-print fixed top-6 right-6 flex gap-3 z-[300]">
+          <button onClick={() => setIsPrintMode(false)} className="bg-slate-800 text-white px-6 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 shadow-2xl hover:bg-black transition-all">
+            <EyeOff size={16} /> KEMBALI
+          </button>
+          <button onClick={handleExportWord} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 shadow-2xl hover:bg-blue-700 transition-all">
+            <FileDown size={16} /> WORD
+          </button>
+          <button onClick={handlePrint} className="bg-rose-600 text-white px-6 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 shadow-2xl hover:bg-rose-700 transition-all">
+            <Printer size={16} /> CETAK PDF
+          </button>
+        </div>
+
+        <div ref={printRef}>
+          <div className="text-center mb-10">
+            <h1 className="text-2xl font-black uppercase border-b-4 border-black pb-2 inline-block tracking-tight text-slate-900">Analisis Capaian Pembelajaran</h1>
+            <h2 className="text-xl font-bold mt-3 uppercase text-slate-800">{settings.schoolName}</h2>
+            <div className="flex justify-center gap-10 mt-6 text-xs font-black uppercase tracking-widest text-slate-600 font-sans">
+              <span>MAPEL: {filterMapel}</span>
+              <span>KELAS / FASE: {filterKelas} / {filterFase.replace('Fase ', '')}</span>
+              <span>TAHUN: {activeYear}</span>
+            </div>
+          </div>
+
+          <table className="w-full border-collapse border-2 border-black text-[10px]">
+            <thead>
+              <tr className="bg-slate-100 h-12 uppercase font-black text-center">
+                <th className="border-2 border-black w-[5%]">NO</th>
+                <th className="border-2 border-black px-4 py-2 text-left uppercase w-[30%]">CAPAIAN PEMBELAJARAN</th>
+                <th className="border-2 border-black px-4 py-2 text-left uppercase w-[20%]">MATERI POKOK</th>
+                <th className="border-2 border-black px-4 py-2 text-left uppercase w-[45%]">TUJUAN PEMBELAJARAN</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredAnalisis.length === 0 ? (
+                <tr><td colSpan={4} className="border-2 border-black p-10 text-center italic text-slate-400">Belum ada data analisis CP-TP.</td></tr>
+              ) : (
+                filteredAnalisis.map((item, idx) => {
+                  const cpDesc = cpLookup[item.cpId] || '-';
+                  return (
+                    <tr key={item.id} className="break-inside-avoid">
+                      <td className="border-2 border-black p-3 text-center font-bold">{idx + 1}</td>
+                      <td className="border-2 border-black p-3 leading-relaxed text-justify italic">{cpDesc}</td>
+                      <td className="border-2 border-black p-3 font-black uppercase leading-tight">{item.materi}</td>
+                      <td className="border-2 border-black p-3 leading-relaxed text-justify">{item.tujuanPembelajaran}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+
+          <div className="mt-16 flex justify-between items-start text-xs px-12 font-sans uppercase font-black tracking-tight break-inside-avoid">
+             <div className="text-center w-72">
+                <p>Mengetahui,</p> <p>Kepala Sekolah</p> <div className="h-24"></div> <p className="border-b border-black inline-block min-w-[200px]">{settings.principalName}</p> <p className="no-underline mt-1 font-normal">NIP. {settings.principalNip}</p>
+             </div>
+             <div className="text-center w-72">
+                <p>Bilato, {new Date().toLocaleDateString('id-ID', {day: 'numeric', month: 'long', year: 'numeric'})}</p> <p>Guru Kelas/Mapel</p> <div className="h-24"></div> <p className="border-b border-black inline-block min-w-[200px]">{user?.name || '[Nama Guru]'}</p> <p className="no-underline mt-1 font-normal">NIP. {user?.nip || '...................'}</p>
+             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500">
+      <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+        <div className="flex flex-col md:flex-row items-center justify-between mb-8 gap-4">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-emerald-600 text-white rounded-2xl shadow-lg"><BrainCircuit size={24} /></div>
+            <div>
+              <h2 className="text-xl font-black text-slate-800 uppercase tracking-tight leading-none">ANALISIS CAPAIAN PEMBELAJARAN</h2>
+              <p className="text-[10px] text-slate-400 font-bold uppercase mt-1">{user.apiKey ? 'Menggunakan Kunci Kustom' : 'Menggunakan Kunci Sekolah'}</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setIsPrintMode(true)} className="bg-slate-800 text-white px-6 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 hover:bg-black shadow-lg transition-all"><Eye size={18} /> PRATINJAU</button>
+            <button onClick={handleExportWord} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl text-xs font-black flex items-center gap-2 hover:bg-blue-700 shadow-lg transition-all"><FileDown size={18} /> WORD</button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 bg-slate-50 p-6 rounded-[24px] border border-slate-100">
+          <div>
+            <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1 tracking-widest flex items-center gap-1">Fase (Terkunci) <Lock size={10} className="text-amber-500" /></label>
+            <div className="w-full bg-slate-100 border border-slate-200 rounded-xl p-3 text-sm font-black text-slate-500">
+              FASE C
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1 tracking-widest flex items-center gap-1">Kelas (Terkunci) <Lock size={10} className="text-amber-500" /></label>
+            <div className="w-full bg-slate-100 border border-slate-200 rounded-xl p-3 text-sm font-black text-slate-500">
+              KELAS 5
+            </div>
+          </div>
+          <div>
+            <label className="block text-[10px] font-black text-slate-400 uppercase mb-2 ml-1 tracking-widest">Pilih Mata Pelajaran</label>
+            <select className="w-full bg-white border border-slate-200 rounded-xl p-3 text-sm font-black outline-none focus:ring-2 focus:ring-emerald-500" value={filterMapel} onChange={(e) => setFilterMapel(e.target.value)}>
+              {availableMapel.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+        <div className="xl:col-span-1 bg-white rounded-[32px] shadow-sm border border-slate-200 overflow-hidden">
+          <div className="p-6 bg-slate-900 text-white flex items-center gap-3">
+             <Sparkles size={20} className="text-emerald-400"/>
+             <h3 className="text-xs font-black uppercase tracking-widest">CP Untuk Dianalisis</h3>
+          </div>
+          <div className="p-6 space-y-4 max-h-[600px] overflow-y-auto no-scrollbar">
+            {loading ? (
+              <div className="py-20 text-center"><Loader2 className="animate-spin inline-block text-slate-300" size={32}/></div>
+            ) : filteredCps.length === 0 ? (
+              <div className="p-10 text-center border-2 border-dashed border-slate-100 rounded-2xl">
+                 <AlertCircle size={32} className="mx-auto text-slate-200 mb-2"/>
+                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed">Belum ada data CP.</p>
+              </div>
+            ) : filteredCps.map(cp => (
+              <div key={cp.id} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-4">
+                <div className="flex justify-between items-start gap-2">
+                  <span className="bg-white border border-slate-200 px-2 py-1 rounded text-[9px] font-black text-slate-500 uppercase">{cp.kode}</span>
+                  <h4 className="text-[10px] font-black text-slate-800 uppercase text-right leading-tight">{cp.elemen}</h4>
+                </div>
+                <p className="text-[11px] leading-relaxed text-slate-600 line-clamp-4 italic">"{cp.deskripsi}"</p>
+                <button onClick={() => handleAnalyze(cp)} disabled={isAnalyzing} className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-3 rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 text-[10px] uppercase disabled:opacity-50 tracking-widest">
+                  {isAnalyzing ? <Loader2 size={14} className="animate-spin"/> : <Sparkles size={14}/>} ANALISIS DENGAN AI
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="xl:col-span-2">
+          <div className="bg-white rounded-[32px] shadow-sm border border-slate-200 overflow-hidden min-h-[500px]">
+            <div className="p-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
+               <div className="flex items-center gap-3">
+                 <ListChecks size={20} className="text-emerald-600"/>
+                 <h3 className="text-xs font-black uppercase tracking-widest text-slate-800">Daftar Hasil Analisis ({filteredAnalisis.length})</h3>
+               </div>
+               <div className="flex items-center gap-2 px-3 py-1 bg-white border border-slate-200 rounded-full text-[9px] font-black text-slate-400 uppercase">
+                 <Cloud size={10}/> Data Cloud Aktif
+               </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-slate-900 text-white text-[10px] font-black uppercase tracking-widest h-12">
+                    <th className="px-6 py-2 w-[5%] text-center">No</th>
+                    <th className="px-6 py-2 w-[30%]">Capaian Pembelajaran</th>
+                    <th className="px-6 py-2 w-[20%]">Materi Pokok</th>
+                    <th className="px-6 py-2 w-[35%]">TUJUAN PEMBELAJARAN</th>
+                    <th className="px-6 py-2 w-[10%] text-center">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredAnalisis.length === 0 ? (
+                    <tr><td colSpan={5} className="py-32 text-center text-slate-300 font-bold uppercase text-xs tracking-widest">Belum ada hasil analisis</td></tr>
+                  ) : filteredAnalisis.map((item, idx) => {
+                    const cpDesc = cpLookup[item.cpId] || '-';
+                    return (
+                      <tr key={item.id} className="group hover:bg-slate-50/50 transition-colors align-top">
+                        <td className="px-6 py-6 text-center font-black text-slate-300">{idx + 1}</td>
+                        <td className="px-6 py-6 text-[10px] text-slate-500 italic leading-relaxed">{cpDesc}</td>
+                        <td className="px-6 py-6 font-black text-[10px] text-slate-900 uppercase">
+                           <textarea className="w-full bg-emerald-50/50 border border-emerald-100 rounded-xl p-3 text-[10px] font-black text-emerald-800 uppercase resize-none h-20 outline-none focus:ring-2 focus:ring-emerald-500" value={item.materi} onChange={e => updateDoc(doc(db, "analisis", item.id), { materi: e.target.value })} />
+                        </td>
+                        <td className="px-6 py-6">
+                           <textarea className="w-full bg-transparent border-none focus:ring-0 text-sm font-medium text-slate-700 leading-relaxed resize-none p-0 h-24 scrollbar-none" value={item.tujuanPembelajaran} onChange={e => updateDoc(doc(db, "analisis", item.id), { tujuanPembelajaran: e.target.value })} />
+                        </td>
+                        <td className="px-6 py-6 text-center">
+                          <button onClick={() => deleteDoc(doc(db, "analisis", item.id))} className="p-2 text-slate-300 hover:text-red-600 transition-all opacity-0 group-hover:opacity-100"><Trash2 size={16}/></button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {filteredAnalisis.length > 0 && (
+               <div className="p-6 bg-slate-50 border-t border-slate-100 flex items-start gap-3">
+                 <Info size={16} className="text-emerald-600 shrink-0 mt-0.5"/>
+                 <p className="text-[10px] text-slate-400 font-medium italic leading-relaxed">
+                   *Hasil analisis ini akan muncul otomatis sebagai referensi saat Anda menyusun ATP, Prota, Promes, dan RPM.
+                 </p>
+               </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default AnalisisManager;
